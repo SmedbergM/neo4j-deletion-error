@@ -8,3 +8,5 @@ import gremlin.scala._
 class ExampleDB(storageDirectory: File) {
   val graphDB = Neo4jGraph.open(storageDirectory.getAbsolutePath).asScala
 }
+
+case class Foo(x: Int, name: String)
