@@ -1,0 +1,17 @@
+package com.github.smedbergm.neo4jbug.utils
+
+import scalaz.concurrent.Task
+
+
+trait ScalazSupport {
+  case class RichOption[T](optT: Option[T]) {
+    def toTask: Task[T] = Task {optT.getOrElse(throw EmptyOption)}
+  }
+
+  implicit def toRich[T](optT: Option[T]): RichOption[T] = RichOption(optT)
+  implicit def fromRich[T](rOptT: RichOption[T]): Option[T] = rOptT match {
+    case RichOption(optT) => optT
+  }
+}
+
+object EmptyOption extends Exception
