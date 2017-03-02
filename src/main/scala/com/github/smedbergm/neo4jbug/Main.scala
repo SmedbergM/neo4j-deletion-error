@@ -8,12 +8,12 @@ import org.http4s.server.{Server, ServerApp}
 import scalaz.concurrent.Task
 
 object Main extends ServerApp {
-  val dbPath = sys.env.getOrElse("NEO4JPATH","/tmp/neo")
-  val dbDir = new java.io.File(dbPath)
-  val db = new ExampleDB(dbDir)
-  val dBService = new DBService(db)
 
   override def server(args: List[String]): Task[Server] = {
+    val dbPath = args.headOption.getOrElse("/tmp/neodb")
+    val dbDir = new java.io.File(dbPath)
+    val db = new ExampleDB(dbDir)
+    val dBService = new DBService(db)
     BlazeBuilder.bindHttp(8080, "localhost")
       .mountService(dBService.dbService)
       .start
