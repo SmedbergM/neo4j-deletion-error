@@ -90,7 +90,8 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport {
     .out
     .hasLabel[Bar]
     .map(_.toCC[Bar])
-    .toList()
+    .toList
+    .sortBy(_.id)
   }
 
   def removeBar(barID: Int, fooID: Int): Task[Bar] = for {

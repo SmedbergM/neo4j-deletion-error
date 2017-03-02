@@ -14,8 +14,10 @@ class DBService(db: ExampleDB) extends ResponseSupport {
 
     case GET -> Root / "foo" / IntVar(fooID) =>
       db.getFoo(fooID).flatMap(toTaskResponse).handleWith(toErrorResponse)
-    case GET -> Root / "foo" / IntVar(fooID) / "bar" =>
-      db.getBars(fooID).flatMap(toTaskResponse).handleWith(toErrorResponse)
+    case GET -> Root / "foo" / IntVar(fooID) / "bar" :? Start(optStart) +& N(optN) =>
+      val start = optStart.getOrElse(0)
+      val end = start + optN.getOrElse(10)
+      db.getBars(fooID).map{foos => foos.slice(start, end)}.flatMap(toTaskResponse).handleWith(toErrorResponse)
     case GET -> Root / "foo" / IntVar(fooID) / "bar" / IntVar(barID) =>
       db.getBar(barID, fooID).flatMap(toTaskResponse).handleWith(toErrorResponse)
   }
@@ -31,3 +33,6 @@ object Usage {
       |GET /foo/{fooID}/bar # returns an JSON array of all the Bars owned by that Foo
       |GET /foo/{fooID}/bar/{barID}""".stripMargin
 }
+
+object Start extends OptionalQueryParamDecoderMatcher[Int]("start")
+object N extends OptionalQueryParamDecoderMatcher[Int]("n")
