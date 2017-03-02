@@ -2,7 +2,7 @@ package com.github.smedbergm.neo4jbug.neo4j
 
 import java.io.File
 
-import com.github.smedbergm.neo4jbug.utils.{BadRequestException, EmptyOption, NotFoundException, ScalazSupport}
+import com.github.smedbergm.neo4jbug.utils._
 import org.apache.tinkerpop.gremlin.neo4j.structure.Neo4jGraph
 import gremlin.scala._
 import org.apache.tinkerpop.gremlin.structure.Transaction
@@ -20,25 +20,19 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport {
     storageDirectory.mkdir()
   }
 
-  val graphDB = Neo4jGraph.open(storageDirectory.getAbsolutePath).asScala
+  val graphDB: ScalaGraph = Neo4jGraph.open(storageDirectory.getAbsolutePath).asScala
 
   sys.addShutdownHook{
     graphDB.close()
   }
 
-  def addFoo(foo: Foo): Task[Foo] = graphDB.V.hasLabel[Foo]
-    .has(idKey, foo.id)
-    .headOption() match {
-      case None => for {
-        tx <- Task {graphDB.tx()}
-        newVertex <- Task(graphDB + foo).handleWith{ case exc =>
-            tx.rollback()
-            Task.fail(exc)
-        }
-        _ = tx.commit()
-      } yield newVertex.toCC[Foo]
-      case Some(_) => Task.fail(BadRequestException(s"Foo #${foo.id} already exists in database."))
-    }
+  def addFoo(foo: Foo): Task[Foo] = for {
+    _ <- graphDB.V.hasLabel[Foo].has(idKey, foo.id).headOption().succeedIfEmpty
+      .handleWith{ case NonemptyOption => Task.fail(BadRequestException(s"Foo #${foo.id} already exists."))}
+    tx <- Task{graphDB.tx()}
+    newVertex <- Task(graphDB + foo).handleWith(rollback(tx))
+    _ = tx.commit()
+  } yield newVertex.toCC[Foo]
 
   def getFoo(fooID: Int): Task[Foo] = for {
     v <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption().toTask
@@ -49,40 +43,89 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport {
   def removeFoo(fooID: Int): Task[Foo] = for {
     v <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption().toTask
      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #${fooID} not found."))}
-    foo <- Task(v.toCC[Foo])
+    storedFoo <- Task(v.toCC[Foo])
     tx <- Task(graphDB.tx())
-    _ = Task(v.remove())
-      .handleWith { case exc =>
-        tx.rollback()
-        Task.fail(exc)
-      }
+    _ <- v.out.drop.headOption.succeedIfEmpty.handleWith(rollback(tx))
+    _ <- Task(v.remove()).handleWith(rollback(tx))
     _ = tx.commit()
-  } yield foo
+  } yield storedFoo
 
   def updateFoo(foo: Foo): Task[Foo] = for {
     v <- graphDB.V.hasLabel[Foo].has(idKey, foo.id).headOption().toTask
       .handleWith{case EmptyOption => Task.fail(NotFoundException(s"Foo #${foo.id} not found."))}
     tx <- Task(graphDB.tx())
-    _ <- Task(v.updateWith(foo))
-      .handleWith{ case exc =>
-        tx.rollback()
-        Task.fail(exc)
-      }
+    _ <- Task(v.updateWith(foo)).handleWith(rollback(tx))
     _ = tx.commit()
   } yield v.toCC[Foo]
 
-  def addBar(bar: Bar, fooID: Int): Task[Bar] = ???
-  def getBar(barID: Int): Task[Bar] = ???
-  def getBars(fooID: Int): Task[Iterable[Bar]] = ???
-  def removeBar(bar: Bar, fooID: Int): Task[Bar] = ???
-  def updateBar(bar: Bar, fooID: Int): Task[Bar] = ???
+  def addBar(bar: Bar, fooID: Int): Task[Bar] = for {
+    fooV <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption().toTask
+      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #${fooID} not found."))}
+    _ <- fooV.out().hasLabel[Bar].has(idKey, bar.id).headOption().succeedIfEmpty
+      .handleWith{ case NonemptyOption => Task.fail(BadRequestException(s"Bar #${bar.id} already exists in the database."))}
+    tx <- Task(graphDB.tx())
+    barV <- Task({
+      val barV = graphDB + bar
+      fooV --- "owns" --> barV
+      barV
+    }).handleWith{ case exc => tx.rollback(); Task.fail(exc)}
+    _ = tx.commit()
+  } yield barV.toCC[Bar]
 
-  def close() = graphDB.close()
+  def getBar(barID: Int, fooID: Int): Task[Bar] = graphDB.V
+    .hasLabel[Foo]
+    .has(idKey, fooID)
+    .out
+    .hasLabel[Bar]
+    .has(idKey, barID)
+    .headOption
+    .map(_.toCC[Bar])
+    .toTask
+    .handleWith {case EmptyOption => Task.fail(NotFoundException(s"Bar #${barID} not found."))}
+
+  def getBars(fooID: Int): Task[List[Bar]] = Task {
+    graphDB.V
+    .hasLabel[Foo]
+    .has(idKey, fooID)
+    .out
+    .hasLabel[Bar]
+    .map(_.toCC[Bar])
+    .toList()
+  }
+
+  def removeBar(barID: Int, fooID: Int): Task[Bar] = for {
+    fooV <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption.toTask
+      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #$fooID not found."))}
+    barV <- fooV.out.hasLabel[Bar].has(idKey, barID).headOption.toTask
+      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Bar #$barID not found."))}
+    storedBar <- Task(barV.toCC[Bar])
+    tx <- Task(graphDB.tx())
+    _ <- Task(barV.remove()).handleWith(rollback(tx))
+    _ = tx.commit()
+  } yield storedBar
+
+  def updateBar(bar: Bar, fooID: Int): Task[Bar] = for {
+    fooV <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption.toTask
+      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #$fooID not found."))}
+    barV <- fooV.out.hasLabel[Bar].has(idKey, bar.id).headOption.toTask
+      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Bar #${bar.id} not found."))}
+    tx <- Task(graphDB.tx())
+    _ <- Task(barV.updateWith(bar)).handleWith(rollback(tx))
+    _ = tx.commit()
+  } yield barV.toCC[Bar]
+
+  def close(): Unit = graphDB.close()
 }
 
 object ExampleDB {
   val idKey = Key[Int]("id")
   val nameKey = Key[String]("name")
+
+  def rollback[T](tx: Transaction): PartialFunction[Throwable, Task[T]] = {
+    case exc =>
+      tx.rollback()
+      Task.fail(exc).asInstanceOf[Task[T]]
+  }
 }
 
 case class Foo(id: Int, name: String)

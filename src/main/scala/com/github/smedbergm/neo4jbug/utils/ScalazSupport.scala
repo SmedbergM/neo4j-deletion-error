@@ -6,6 +6,11 @@ import scalaz.concurrent.Task
 trait ScalazSupport {
   case class RichOption[T](optT: Option[T]) {
     def toTask: Task[T] = Task {optT.getOrElse(throw EmptyOption)}
+    def succeedIfEmpty: Task[Unit] = if (optT.isEmpty) {
+      Task.now(())
+    } else {
+      Task.fail(NonemptyOption)
+    }
   }
 
   implicit def toRich[T](optT: Option[T]): RichOption[T] = RichOption(optT)
@@ -14,4 +19,5 @@ trait ScalazSupport {
   }
 }
 
-object EmptyOption extends Exception
+object EmptyOption extends Throwable
+object NonemptyOption extends Throwable
