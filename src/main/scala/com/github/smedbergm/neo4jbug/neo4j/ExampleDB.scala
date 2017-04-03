@@ -2,7 +2,9 @@ package com.github.smedbergm.neo4jbug.neo4j
 
 import java.io.File
 
+import scala.collection.JavaConverters._
 import com.github.smedbergm.neo4jbug.utils._
+import com.typesafe.scalalogging.LazyLogging
 import org.apache.tinkerpop.gremlin.neo4j.structure.Neo4jGraph
 import gremlin.scala._
 import org.apache.tinkerpop.gremlin.structure.Transaction
@@ -10,7 +12,7 @@ import org.apache.tinkerpop.gremlin.structure.Transaction
 import scalaz.\/
 import scalaz.concurrent.Task
 
-class ExampleDB(storageDirectory: File) extends ScalazSupport {
+class ExampleDB(storageDirectory: File) extends ScalazSupport with LazyLogging {
   import ExampleDB._
 
   if (storageDirectory.exists && storageDirectory.isDirectory && storageDirectory.canWrite) {
@@ -27,6 +29,11 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport {
     graphDB.close()
   }
 
+  def addFoo(name: String): Task[Foo] = for {
+    id <- getOpenFooID
+    foo <- addFoo(Foo(id, name))
+  } yield foo
+
   def addFoo(foo: Foo): Task[Foo] = for {
     _ <- graphDB.V.hasLabel[Foo].has(idKey, foo.id).headOption().succeedIfEmpty
       .handleWith{ case NonemptyOption => Task.fail(BadRequestException(s"Foo #${foo.id} already exists."))}
@@ -41,15 +48,47 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport {
     foo <- Task(v.toCC[Foo])
   } yield foo
 
+  def getFoos(start: Int = 0, n: Int = 10): Task[List[Foo]] = Task {
+    graphDB.V.hasLabel[Foo].map(_.toCC[Foo]).toStream.skip(start).iterator().asScala.take(n).toList
+  }
+
   def removeFoo(fooID: Int): Task[Foo] = for {
     v <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption().toTask
+      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #${fooID} not found."))}
+    _ = logger.debug(s"About to remove vertex ${v}")
+    storedFoo <- Task(v.toCC[Foo])
+    _ = logger.debug(s"About to remove $storedFoo")
+    tx <- Task {graphDB.tx()}
+    _ = logger.debug("Beginning transaction")
+    _ <- v.out.drop.headOption().succeedIfEmpty.handleWith(rollback(tx))
+    _ = logger.debug("Drop step completed.")
+    _ <- Task.now(v.remove()).handleWith(rollback(tx))
+    _ = logger.debug("Foo removal completed")
+    _ = tx.commit()
+  } yield storedFoo
+
+  def removeFoo2(fooID: Int): Task[Foo] = for {
+    v <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption().map(_.asScala).toTask
      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #${fooID} not found."))}
+    _ = logger.debug(s"About to remove vertex $v")
     storedFoo <- Task(v.toCC[Foo])
     tx <- Task(graphDB.tx())
     _ <- v.out.drop.headOption.succeedIfEmpty.handleWith(rollback(tx))
-    _ <- Task(v.remove()).handleWith(rollback(tx))
+    _ = logger.debug("Drop step completed")
+    _ <- graphDB.V.hasLabel[Foo].has(idKey, fooID).drop.headOption().succeedIfEmpty
+        .handleWith(rollback(tx))
+    _ = logger.debug("Foo removal completed")
     _ = tx.commit()
+    _ = logger.debug("Commit completed")
   } yield storedFoo
+
+  def removeFoosChildren(fooID: Int): Task[Int] = for {
+    v <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption().toTask
+      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #${fooID} not found."))}
+    tx <- Task(graphDB.tx())
+    count <- v.out.foldLeft(0)((count,v) => {v.remove(); count + 1}).headOption.toTask
+    _ = tx.commit()
+  } yield count
 
   def updateFoo(foo: Foo): Task[Foo] = for {
     v <- graphDB.V.hasLabel[Foo].has(idKey, foo.id).headOption().toTask
@@ -60,16 +99,25 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport {
   } yield v.toCC[Foo]
 
   private def getOpenFooID: Task[Int] = {
-    def countFrom(n: Int): Stream[Int] = if (n == Int.MaxValue) {
-      Stream(n)
-    } else {
-      n #:: countFrom(n+1)
-    }
-
     countFrom(0).find { x =>
       graphDB.V.hasLabel[Foo].has(idKey,x).headOption().isEmpty
     }.toTask.handleWith{ case EmptyOption => Task.fail(BadRequestException("Every possible ID is taken. How did you do that?"))}
   }
+
+  def addBar(fooID: Int, name: String): Task[Bar] = for {
+    fooV <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption().toTask
+      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #${fooID} not found."))}
+    fooVOut = fooV.out().map(_.value2(idKey)).toSet
+    barID <- countFrom(0).find{id => !fooVOut.contains(id)}.toTask
+      .handleWith{ case EmptyOption => Task.fail(BadRequestException("Every possible ID is taken. How did you do that?"))}
+    tx <- Task(graphDB.tx())
+    barV <- Task {
+      val barV = graphDB + Bar(barID, name)
+      fooV --- "owns" --> barV
+      barV
+    }.handleWith{rollback(tx)}
+    _ = tx.commit()
+  } yield barV.toCC[Bar]
 
   def addBar(bar: Bar, fooID: Int): Task[Bar] = for {
     fooV <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption().toTask
@@ -81,49 +129,23 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport {
       val barV = graphDB + bar
       fooV --- "owns" --> barV
       barV
-    }).handleWith{ case exc => tx.rollback(); Task.fail(exc)}
+    }).handleWith{ rollback(tx) }
     _ = tx.commit()
   } yield barV.toCC[Bar]
 
-  def addBars(bars: Iterable[Bar], fooID: Int): Task[List[Throwable \/ Bar]] = for {
-    fooV <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption().toTask
-      .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #$fooID not found."))}
-    tx = graphDB.tx()
-    existingBarIDs = fooV.out.hasLabel[Bar].value(idKey).toSet
-    maybeBars = bars.map { bar =>
-      val task = if (existingBarIDs contains bar.id) {
-        Task.fail(BadRequestException(s"Foo #$fooID already has a child with ID ${bar.id}"))
-      } else for {
-        barV <- Task(graphDB + bar)
-        _ <- Task (fooV --- "owns" --> barV)
-      } yield barV.toCC[Bar]
-      task.unsafePerformSyncAttempt
-    }
-    _ = tx.commit()
-  } yield maybeBars.toList
-
-  def generateFooWithBars(n: Int = 1000, singleTransaction: Boolean = true): Task[Foo] = {
+  def generateFooWithBars(n: Int = 1000): Task[Foo] = {
     getOpenFooID.map { fooID =>
       val tx = graphDB.tx()
       val fooV = graphDB + Foo(fooID, "Autogenerated Foo")
       tx.commit()
       fooV
     }.map { fooV =>
-      if (singleTransaction) {
-        val tx = graphDB.tx()
-        (0 to n).foreach{ barID =>
-          val barV = graphDB + Bar(barID, s"Autogenerated barchild of Foo #${fooV.value2(idKey)}")
-          fooV --- "owns" --> barV
-        }
-        tx.commit()
-      } else {
-        (0 to n).foreach { barID =>
-          val tx = graphDB.tx()
-          val barV = graphDB + Bar(barID, s"Autogenerated barchild of Foo #${fooV.value2(idKey)}")
-          fooV --- "owns" --> barV
-          tx.commit()
-        }
+      val tx = graphDB.tx()
+      (0 until n).foreach { barID =>
+        val barV = graphDB + Bar(barID, s"Autogenerated barchild of Foo #${fooV.value2(idKey)}")
+        fooV --- "owns" --> barV
       }
+      tx.commit()
       fooV.toCC[Foo]
     }
   }
@@ -150,7 +172,7 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport {
     .sortBy(_.id)
   }
 
-  def removeBar(barID: Int, fooID: Int): Task[Bar] = for {
+  def removeBar(fooID: Int, barID: Int): Task[Bar] = for {
     fooV <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption.toTask
       .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #$fooID not found."))}
     barV <- fooV.out.hasLabel[Bar].has(idKey, barID).headOption.toTask
@@ -161,7 +183,7 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport {
     _ = tx.commit()
   } yield storedBar
 
-  def updateBar(bar: Bar, fooID: Int): Task[Bar] = for {
+  def updateBar(fooID: Int, bar: Bar): Task[Bar] = for {
     fooV <- graphDB.V.hasLabel[Foo].has(idKey, fooID).headOption.toTask
       .handleWith{ case EmptyOption => Task.fail(NotFoundException(s"Foo #$fooID not found."))}
     barV <- fooV.out.hasLabel[Bar].has(idKey, bar.id).headOption.toTask
@@ -174,14 +196,21 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport {
   def close(): Unit = graphDB.close()
 }
 
-object ExampleDB {
+object ExampleDB extends LazyLogging {
   val idKey = Key[Int]("id")
   val nameKey = Key[String]("name")
 
   def rollback[T](tx: Transaction): PartialFunction[Throwable, Task[T]] = {
     case exc =>
+      logger.debug(s"Rolling back due to exception $exc")
       tx.rollback()
       Task.fail(exc).asInstanceOf[Task[T]]
+  }
+
+  private def countFrom(n: Int): Stream[Int] = if (n == Int.MaxValue) {
+    Stream(n)
+  } else {
+    n #:: countFrom(n + 1)
   }
 }
 

@@ -8,3 +8,5 @@ sealed trait CustomException extends Throwable {
 case class BadRequestException(errorMessage:String) extends CustomException
 
 case class NotFoundException(errorMessage: String) extends CustomException
+
+case class InternalServerException(errorMessage: String) extends CustomException

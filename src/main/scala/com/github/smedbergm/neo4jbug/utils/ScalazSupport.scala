@@ -5,7 +5,7 @@ import scalaz.concurrent.Task
 
 trait ScalazSupport {
   case class RichOption[T](optT: Option[T]) {
-    def toTask: Task[T] = Task {optT.getOrElse(throw EmptyOption)}
+    def toTask: Task[T] = optT.map(t => Task.now(t)).getOrElse(Task.fail(EmptyOption))
     def succeedIfEmpty: Task[Unit] = if (optT.isEmpty) {
       Task.now(())
     } else {
