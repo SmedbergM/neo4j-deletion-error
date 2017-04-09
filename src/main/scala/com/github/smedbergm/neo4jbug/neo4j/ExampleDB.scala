@@ -9,7 +9,6 @@ import org.apache.tinkerpop.gremlin.neo4j.structure.Neo4jGraph
 import gremlin.scala._
 import org.apache.tinkerpop.gremlin.structure.Transaction
 
-import scalaz.\/
 import scalaz.concurrent.Task
 
 class ExampleDB(storageDirectory: File) extends ScalazSupport with LazyLogging {
@@ -20,7 +19,7 @@ class ExampleDB(storageDirectory: File) extends ScalazSupport with LazyLogging {
   } else if (storageDirectory.exists) {
     throw new IllegalArgumentException("Parameter storageDirectory must be a writable directory.")
   } else {
-    storageDirectory.mkdir()
+    assert(storageDirectory.mkdir())
   }
 
   val graphDB: ScalaGraph = Neo4jGraph.open(storageDirectory.getAbsolutePath).asScala
