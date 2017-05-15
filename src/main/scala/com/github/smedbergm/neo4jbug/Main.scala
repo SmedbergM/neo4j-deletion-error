@@ -4,7 +4,7 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{Executors, ExecutorService, ThreadFactory}
 
-import com.github.smedbergm.neo4jbug.neo4j.{ExampleDB4s, Foo, ExampleDB, ExampleDB4j}
+import com.github.smedbergm.neo4jbug.neo4j.{Foo, ExampleDB, ExampleDB4j}
 import com.typesafe.scalalogging.LazyLogging
 import scalaz.concurrent.Task
 
@@ -60,6 +60,7 @@ object Main extends App with LazyLogging {
 
   logger.info("Done, closing DB connection.")
   db.close()
+  Implicits.es.shutdown()
   logger.info("DB connection closed, exiting.")
 }
 
