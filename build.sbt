@@ -12,7 +12,7 @@ logLevel := Level.Warn
 val http4sVersion = "0.15.3a"
 
 libraryDependencies ++= Seq(
-  "org.scalaz" % "scalaz-concurrent_2.10" % "7.2.8",
+  "org.scalaz" %% "scalaz-concurrent" % "7.2.8",
   "org.json4s" %% "json4s-jackson" % "3.5.0",
   "com.michaelpollmeier" %% "gremlin-scala" % "3.2.4.13",
   "org.apache.tinkerpop" % "neo4j-gremlin" % "3.2.4" exclude("com.github.jeremyh", "jBCrypt"),

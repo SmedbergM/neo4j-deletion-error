@@ -2,11 +2,10 @@ package com.github.smedbergm.neo4jbug
 
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{ExecutorService, Executors, ThreadFactory}
+import java.util.concurrent.{Executors, ExecutorService, ThreadFactory}
 
-import com.github.smedbergm.neo4jbug.neo4j.{ExampleDB, Foo}
+import com.github.smedbergm.neo4jbug.neo4j.{ExampleDB4s, Foo, ExampleDB, ExampleDB4j}
 import com.typesafe.scalalogging.LazyLogging
-
 import scalaz.concurrent.Task
 
 object Main extends App with LazyLogging {
@@ -18,7 +17,7 @@ object Main extends App with LazyLogging {
   } orElse sys.props.get("user.home").map(_ + File.separator + ".neo4jbug" + File.separator + "db")
   val storageDirectory = new File(storageDirectoryName.getOrElse(sys.exit(1)))
   val db: ExampleDB = if (storageDirectory.isDirectory && storageDirectory.canWrite || storageDirectory.mkdirs()) {
-    val db = new ExampleDB(storageDirectory)
+    val db = new ExampleDB4j(storageDirectory)
     logger.info(s"Neo4j successfully started, storing data at ${storageDirectory.getAbsolutePath}")
     db
   } else {
